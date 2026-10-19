@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
-"""
-MESH-DETECT -- Firmware Flasher
+"""Flash the legacy, detector-only XIAO ESP32-S3 application image.
 
-Use the bundled firmware (or pass a .bin path), plug in your
-XIAO ESP32-S3, and run:
+This script does not install a combined detector + Meshtastic image. Flashing
+its bundled binary onto the single XIAO with the mounted Wio-SX1262 would
+replace Meshtastic and disable LoRa alerts. Use only with a physically separate
+legacy detector board, explicitly opting in with --legacy-detector.
 
-    python flash.py
-
-Supports batch flashing -- after each board finishes, swap it out and
-press Enter to flash the next one. Great for production runs.
-
-Works on macOS, Linux, and Windows.
-
-Requirements:  pip install esptool pyserial
+Requires esptool and pyserial. Works on macOS, Linux, and Windows.
 """
 
 import io
@@ -20,7 +14,6 @@ import os
 import sys
 import time
 import subprocess
-import serial.tools.list_ports
 
 # Force UTF-8 on Windows
 if sys.platform == "win32":
@@ -51,12 +44,17 @@ ESP_VIDS = {
 
 BANNER = """
   +==========================================+
-  |   MESH-DETECT -- Firmware Flasher        |
+  |   MESH-DETECT -- Legacy Flasher          |
   +==========================================+"""
 
 
 def find_port():
     """Auto-detect the ESP32 serial port (macOS, Linux, Windows)."""
+    try:
+        import serial.tools.list_ports
+    except ImportError:
+        print("\n  pyserial not found. Install it with: pip install pyserial\n")
+        sys.exit(1)
     ports = serial.tools.list_ports.comports()
     candidates = []
     for p in ports:
@@ -261,33 +259,43 @@ def main():
     args = sys.argv[1:]
     do_erase = "--erase" in args
     do_single = "--single" in args
+    legacy_detector = "--legacy-detector" in args
     bin_path = None
 
     for a in args:
-        if a in ("--erase", "--single"):
+        if a in ("--erase", "--single", "--legacy-detector"):
             continue
         if a in ("-h", "--help"):
             print("""
-  Usage:  python flash.py [firmware.bin] [--erase] [--single]
+  Usage:  python flash.py --legacy-detector [firmware.bin] [--erase] [--single]
+
+  This flashes a separate, legacy detector XIAO only. The bundled detector
+  image must not be flashed onto the single XIAO/Wio-SX1262 Meshtastic kit.
 
   Options:
     firmware.bin   Alternate app image (default: mesh-detect-meta-glasses.bin)
+    --legacy-detector  Required opt-in for a physically separate detector board
     --erase        Clear saved settings only, then flash (resets filters/password)
     --single       Flash one board and exit (default is auto-flash loop)
 
-  Auto-flash (default -- plug boards in one after another):
-    python flash.py
-    python flash.py --erase
+  Auto-flash legacy detector boards in a batch:
+    python flash.py --legacy-detector
 
-  Single board only:
-    python flash.py --single
+  Flash one legacy detector board:
+    python flash.py --legacy-detector --single
 
   Setup:
     pip install esptool pyserial
-    python flash.py --single
 """)
             sys.exit(0)
         bin_path = a
+
+    if not legacy_detector:
+        print("\n  Refusing to flash the detector-only image without --legacy-detector.")
+        print("  The one-board XIAO/Wio-SX1262 runs Meshtastic; this image would")
+        print("  replace it and stop LoRa alerts. Build and test the combined")
+        print("  detector + Meshtastic firmware before flashing that device.\n")
+        sys.exit(2)
 
     try:
         subprocess.run([sys.executable, "-m", "esptool", "version"],

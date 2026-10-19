@@ -1,0 +1,665 @@
+diff --git a/src/SerialConsole.cpp b/src/SerialConsole.cpp
+index dd2acb5..cc9c8ca 100644
+--- a/src/SerialConsole.cpp
++++ b/src/SerialConsole.cpp
+@@ -90,7 +90,13 @@ int32_t SerialConsole::runOnce()
+ #if defined(SERIAL_HAS_ON_RECEIVE) || defined(CONFIG_IDF_TARGET_ESP32S2)
+     return Port.available() ? delay : INT32_MAX;
+ #elif defined(IS_USB_SERIAL)
++#if defined(SEEED_XIAO_S3) && defined(ARDUINO_USB_MODE) && ARDUINO_USB_MODE == 0
++    // This board's Serial is TinyUSB CDC. HWCDC::isPlugged() checks the other
++    // ESP32-S3 USB peripheral and can impose 20-second API polling intervals.
++    return delay;
++#else
+     return HWCDC::isPlugged() ? delay : (1000 * 20);
++#endif
+ #else
+     return delay;
+ #endif
+@@ -145,4 +151,4 @@ void SerialConsole::log_to_serial(const char *logLevel, const char *format, va_l
+         emitLogRecord(ll, thread ? thread->ThreadName.c_str() : "", format, arg);
+     } else
+         RedirectablePrint::log_to_serial(logLevel, format, arg);
+-}
+\ No newline at end of file
++}
+diff --git a/src/modules/Modules.cpp b/src/modules/Modules.cpp
+index e477574..4c2e207 100644
+--- a/src/modules/Modules.cpp
++++ b/src/modules/Modules.cpp
+@@ -85,7 +85,10 @@
+ #if defined(USE_SX1280) && !MESHTASTIC_EXCLUDE_AUDIO
+ #include "modules/esp32/AudioModule.h"
+ #endif
+-#if !MESHTASTIC_EXCLUDE_PAXCOUNTER
++#if defined(SEEED_XIAO_S3)
++#include "modules/esp32/MeshDetectModule.h"
++#endif
++#if !MESHTASTIC_EXCLUDE_PAXCOUNTER && !defined(SEEED_XIAO_S3)
+ #include "modules/esp32/PaxcounterModule.h"
+ #endif
+ #if !MESHTASTIC_EXCLUDE_STOREFORWARD
+@@ -161,6 +164,9 @@ void setupModules()
+ #endif
+ #if !MESHTASTIC_EXCLUDE_GENERIC_THREAD_MODULE
+     new GenericThreadModule();
++#endif
++#if defined(ARCH_ESP32) && defined(SEEED_XIAO_S3)
++    new MeshDetectModule();
+ #endif
+     // Note: if the rest of meshtastic doesn't need to explicitly use your module, you do not need to assign the instance
+     // to a global variable.
+@@ -278,7 +284,7 @@ void setupModules()
+ #if defined(USE_SX1280) && !MESHTASTIC_EXCLUDE_AUDIO
+     audioModule = new AudioModule();
+ #endif
+-#if !MESHTASTIC_EXCLUDE_PAXCOUNTER
++#if !MESHTASTIC_EXCLUDE_PAXCOUNTER && !defined(SEEED_XIAO_S3)
+     if (moduleConfig.has_paxcounter && moduleConfig.paxcounter.enabled) {
+         paxcounterModule = new PaxcounterModule();
+     }
+diff --git a/src/modules/esp32/MeshDetectModule.cpp b/src/modules/esp32/MeshDetectModule.cpp
+new file mode 100644
+index 0000000..a6edf36
+--- /dev/null
++++ b/src/modules/esp32/MeshDetectModule.cpp
+@@ -0,0 +1,495 @@
++#include "configuration.h"
++
++#if defined(ARCH_ESP32) && defined(SEEED_XIAO_S3)
++
++#include "MeshDetectModule.h"
++#include "MeshService.h"
++#include "Router.h"
++#include "mesh/Channels.h"
++#include <NimBLEDevice.h>
++#include <Preferences.h>
++#include <WiFi.h>
++#include <algorithm>
++#include <cctype>
++#include <cstdio>
++#include <cstring>
++
++// The generated header contains only the old detector's OUI and name filters.
++// A Wio that already has meshdetect NVS filters keeps those settings instead.
++#if __has_include("meshdetect_filter_seed.h")
++#include "meshdetect_filter_seed.h"
++#define MESHDETECT_HAS_FILTER_SEED 1
++#else
++#define MESHDETECT_HAS_FILTER_SEED 0
++#endif
++
++namespace {
++constexpr uint32_t REDETECTION_REARM_MS = 30000;
++constexpr uint32_t GLOBAL_ALERT_SPACING_MS = 10000;
++constexpr uint32_t FAILED_SEND_RETRY_MS = 5000;
++constexpr uint32_t PENDING_ALERT_EXPIRY_MS = 120000;
++constexpr uint32_t DROP_LOG_INTERVAL_MS = 30000;
++constexpr uint32_t WIFI_CHANNEL_HOP_MS = 2000;
++constexpr uint32_t BLE_SCAN_SECONDS = 5;
++constexpr uint16_t BLE_SCAN_INTERVAL_MS = 160;
++constexpr uint16_t BLE_SCAN_WINDOW_MS = 80;
++constexpr uint8_t WIFI_CHANNEL_MAX = 11;
++constexpr uint8_t EVENT_QUEUE_LENGTH = 64;
++
++int hexNibble(char c)
++{
++    if (c >= '0' && c <= '9')
++        return c - '0';
++    if (c >= 'a' && c <= 'f')
++        return c - 'a' + 10;
++    if (c >= 'A' && c <= 'F')
++        return c - 'A' + 10;
++    return -1;
++}
++
++bool parseAddress(const char *text, uint8_t *out, size_t bytes)
++{
++    if (!text || strlen(text) != bytes * 3 - 1)
++        return false;
++    for (size_t i = 0; i < bytes; ++i) {
++        int high = hexNibble(text[i * 3]);
++        int low = hexNibble(text[i * 3 + 1]);
++        if (high < 0 || low < 0 || (i + 1 < bytes && text[i * 3 + 2] != ':'))
++            return false;
++        out[i] = static_cast<uint8_t>((high << 4) | low);
++    }
++    return true;
++}
++
++bool equalIgnoreCase(const char *a, const char *b)
++{
++    if (!a || !b)
++        return false;
++    while (*a && *b) {
++        if (std::tolower(static_cast<unsigned char>(*a)) != std::tolower(static_cast<unsigned char>(*b)))
++            return false;
++        ++a;
++        ++b;
++    }
++    return *a == *b;
++}
++
++bool containsIgnoreCase(const std::string &haystack, const char *needle)
++{
++    const size_t needleLen = strlen(needle);
++    if (!needleLen || haystack.size() < needleLen)
++        return false;
++    for (size_t i = 0; i + needleLen <= haystack.size(); ++i) {
++        bool match = true;
++        for (size_t j = 0; j < needleLen; ++j) {
++            if (std::tolower(static_cast<unsigned char>(haystack[i + j])) !=
++                std::tolower(static_cast<unsigned char>(needle[j]))) {
++                match = false;
++                break;
++            }
++        }
++        if (match)
++            return true;
++    }
++    return false;
++}
++} // namespace
++
++MeshDetectModule *MeshDetectModule::instance = nullptr;
++
++MeshDetectModule::MeshDetectModule() : concurrency::OSThread("MeshDetect")
++{
++    instance = this;
++}
++
++bool MeshDetectModule::addTargetFilter(const char *identifier, bool fullMac)
++{
++    if (targetCount >= MAX_TARGET_FILTERS)
++        return false;
++    TargetFilter filter;
++    filter.length = fullMac ? 6 : 3;
++    if (!parseAddress(identifier, filter.address, filter.length))
++        return false;
++    targetFilters[targetCount++] = filter;
++    return true;
++}
++
++bool MeshDetectModule::addNameFilter(const char *pattern)
++{
++    if (!pattern || !*pattern || strlen(pattern) >= sizeof(nameFilters[0].pattern) || nameCount >= MAX_NAME_FILTERS)
++        return false;
++    NameFilter filter;
++    strcpy(filter.pattern, pattern);
++    nameFilters[nameCount++] = filter;
++    if (equalIgnoreCase(pattern, "Meta") || equalIgnoreCase(pattern, "Oakley") ||
++        equalIgnoreCase(pattern, "Oakley Meta") || equalIgnoreCase(pattern, "Ray-Ban") ||
++        equalIgnoreCase(pattern, "Ray-Ban Meta")) {
++        metaSignatureEnabled = true;
++    }
++    return true;
++}
++
++void MeshDetectModule::loadFilters()
++{
++    Preferences preferences;
++    if (preferences.begin("meshdetect", true)) {
++        int filterCount = std::max(0, std::min(preferences.getInt("filterCount", 0), static_cast<int>(MAX_TARGET_FILTERS)));
++        for (int i = 0; i < filterCount; ++i) {
++            String key = "id_" + String(i);
++            String id = preferences.getString(key.c_str(), "");
++            key = "mac_" + String(i);
++            bool fullMac = preferences.getBool(key.c_str(), false);
++            addTargetFilter(id.c_str(), fullMac);
++        }
++        int count = std::max(0, std::min(preferences.getInt("nameCount", 0), static_cast<int>(MAX_NAME_FILTERS)));
++        for (int i = 0; i < count; ++i) {
++            String key = "name_" + String(i);
++            String name = preferences.getString(key.c_str(), "");
++            addNameFilter(name.c_str());
++        }
++        preferences.end();
++    }
++
++#if MESHDETECT_HAS_FILTER_SEED
++    if (targetCount == 0 && nameCount == 0) {
++        Preferences writable;
++        if (writable.begin("meshdetect", false)) {
++            int savedTargets = 0;
++            for (size_t i = 0; i < kOuiCount && targetCount < MAX_TARGET_FILTERS; ++i) {
++                if (!addTargetFilter(kOuis[i], false))
++                    continue;
++                String key = "id_" + String(savedTargets);
++                writable.putString(key.c_str(), kOuis[i]);
++                key = "mac_" + String(savedTargets);
++                writable.putBool(key.c_str(), false);
++                key = "desc_" + String(savedTargets);
++                writable.putString(key.c_str(), String("OUI: ") + kOuis[i]);
++                ++savedTargets;
++            }
++            writable.putInt("filterCount", savedTargets);
++
++            int savedNames = 0;
++            for (size_t i = 0; i < kNameCount && nameCount < MAX_NAME_FILTERS; ++i) {
++                if (!addNameFilter(kNames[i]))
++                    continue;
++                String key = "name_" + String(savedNames);
++                writable.putString(key.c_str(), kNames[i]);
++                ++savedNames;
++            }
++            writable.putInt("nameCount", savedNames);
++            writable.end();
++            LOG_INFO("MeshDetect: seeded %d OUI and %d name filters into NVS", savedTargets, savedNames);
++        }
++    }
++#endif
++    if (targetCount == 0 && nameCount == 0) {
++        addNameFilter("Meta");
++        addNameFilter("Oakley");
++        addNameFilter("Ray-Ban");
++        LOG_WARN("MeshDetect: no saved filters; using built-in glasses name and BLE signature filters");
++    }
++    LOG_INFO("MeshDetect: loaded %u MAC/OUI and %u name filters", static_cast<unsigned>(targetCount),
++             static_cast<unsigned>(nameCount));
++}
++
++bool MeshDetectModule::matchesTarget(const uint8_t address[6]) const
++{
++    for (size_t i = 0; i < targetCount; ++i) {
++        if (memcmp(address, targetFilters[i].address, targetFilters[i].length) == 0)
++            return true;
++    }
++    return false;
++}
++
++bool MeshDetectModule::matchesName(const std::string &name) const
++{
++    if (name.empty())
++        return false;
++    for (size_t i = 0; i < nameCount; ++i) {
++        if (containsIgnoreCase(name, nameFilters[i].pattern))
++            return true;
++    }
++    return false;
++}
++
++bool MeshDetectModule::matchesMetaSignature(NimBLEAdvertisedDevice *device) const
++{
++    if (!metaSignatureEnabled || !device->isAdvertisingService(NimBLEUUID(static_cast<uint16_t>(0xFD5F))))
++        return false;
++    for (uint8_t i = 0; i < device->getManufacturerDataCount(); ++i) {
++        const std::string data = device->getManufacturerData(i);
++        if (data.size() < 2)
++            continue;
++        uint16_t company = static_cast<uint8_t>(data[0]) | (static_cast<uint16_t>(static_cast<uint8_t>(data[1])) << 8);
++        if (company == 0x01AB || company == 0x0D53)
++            return true;
++    }
++    return false;
++}
++
++void MeshDetectModule::enqueueDetection(const uint8_t address[6], int rssi, uint8_t source)
++{
++    if (!eventQueue)
++        return;
++    DetectionEvent event{};
++    memcpy(event.address, address, sizeof(event.address));
++    event.rssi = static_cast<int8_t>(std::max(-127, std::min(20, rssi)));
++    event.source = source;
++    // BLE and Wi-Fi callbacks run outside the Meshtastic main task. Never send a mesh packet here.
++    if (xQueueSend(eventQueue, &event, 0) != pdTRUE)
++        droppedEvents.fetch_add(1, std::memory_order_relaxed);
++}
++
++void MeshDetectModule::onResult(NimBLEAdvertisedDevice *device)
++{
++    if (!device || !eventQueue)
++        return;
++    const std::string addressText = device->getAddress().toString();
++    uint8_t address[6] = {};
++    if (!parseAddress(addressText.c_str(), address, sizeof(address)))
++        return;
++
++    if (matchesTarget(address) || matchesName(device->getName()) || matchesMetaSignature(device)) {
++        enqueueDetection(address, device->getRSSI(), 0);
++    }
++}
++
++void MeshDetectModule::onScanComplete(NimBLEScanResults results) { (void)results; }
++
++void MeshDetectModule::wifiRx(void *buffer, wifi_promiscuous_pkt_type_t type)
++{
++    MeshDetectModule *self = instance;
++    if (!self || !self->eventQueue || type != WIFI_PKT_MGMT || !buffer)
++        return;
++    const auto *packet = static_cast<const wifi_promiscuous_pkt_t *>(buffer);
++    if (packet->rx_ctrl.sig_len < 24)
++        return;
++    const uint8_t *sourceAddress = packet->payload + 10;
++    // Filter before queueing: this callback runs in the Wi-Fi driver's high-priority task.
++    if (self->matchesTarget(sourceAddress))
++        self->enqueueDetection(sourceAddress, packet->rx_ctrl.rssi, 1);
++}
++
++bool MeshDetectModule::sendAlert(const uint8_t address[6], bool redetection)
++{
++    const auto &primary = channels.getByIndex(0);
++    if (channels.getPrimaryIndex() != 0 || strcmp(channels.getName(0), "Mesh-Detect") != 0 ||
++        channels.isDefaultChannel(0) || primary.settings.psk.size < 16) {
++        LOG_WARN("MeshDetect: refusing alert; primary channel 0 must be private Mesh-Detect");
++        return false;
++    }
++    if (router->getQueueStatus().free == 0) {
++        LOG_WARN("MeshDetect: mesh transmit queue full; alert remains pending");
++        return false;
++    }
++
++    char mac[18];
++    snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", address[0], address[1], address[2], address[3],
++             address[4], address[5]);
++    char message[80];
++    snprintf(message, sizeof(message), redetection ? "Redetection: Device %s" : "Device Detected: %s", mac);
++
++    meshtastic_MeshPacket *packet = router->allocForSending();
++    packet->channel = 0;
++    packet->to = NODENUM_BROADCAST;
++    packet->want_ack = false;
++    packet->decoded.want_response = false;
++    packet->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
++    packet->decoded.payload.size = strlen(message);
++    memcpy(packet->decoded.payload.bytes, message, packet->decoded.payload.size);
++    service->sendToMesh(packet, RX_SRC_LOCAL, true); // ccToPhone makes the Wio's local UI show its own alert.
++    LOG_INFO("MeshDetect: queued on private Mesh-Detect channel: %s", message);
++    return true;
++}
++
++void MeshDetectModule::processDetection(const DetectionEvent &event)
++{
++    const uint32_t now = millis();
++    SeenDevice *entry = nullptr;
++    SeenDevice *oldest = &seen[0];
++    uint32_t oldestAge = 0;
++    for (SeenDevice &candidate : seen) {
++        if (candidate.used && memcmp(candidate.address, event.address, sizeof(event.address)) == 0) {
++            entry = &candidate;
++            break;
++        }
++        if (!candidate.used) {
++            oldest = &candidate;
++            oldestAge = UINT32_MAX;
++        } else if (oldestAge != UINT32_MAX && now - candidate.lastSeen > oldestAge) {
++            oldest = &candidate;
++            oldestAge = now - candidate.lastSeen;
++        }
++    }
++
++    if (!entry) {
++        entry = oldest;
++        if (entry->used && entry->pending)
++            ++evictedAlerts;
++        memcpy(entry->address, event.address, sizeof(event.address));
++        entry->used = true;
++        entry->lastSeen = now;
++        entry->lastAlert = 0;
++        entry->pendingSince = now;
++        entry->pending = true;
++        entry->pendingRedetection = false;
++        return;
++    }
++
++    const uint32_t absence = now - entry->lastSeen;
++    entry->lastSeen = now; // Every matching advertisement refreshes presence, including during cooldown.
++    if (!entry->pending && !entry->lastAlert) {
++        // A prior pending alert expired or was evicted while the device was still visible.
++        entry->pending = true;
++        entry->pendingRedetection = false;
++        entry->pendingSince = now;
++    } else if (!entry->pending && absence >= REDETECTION_REARM_MS &&
++               now - entry->lastAlert >= REDETECTION_REARM_MS) {
++        entry->pending = true;
++        entry->pendingRedetection = true;
++        entry->pendingSince = now;
++    }
++}
++
++void MeshDetectModule::flushPendingAlerts()
++{
++    const uint32_t now = millis();
++    SeenDevice *oldest = nullptr;
++    uint32_t oldestAge = 0;
++    for (SeenDevice &entry : seen) {
++        if (!entry.used || !entry.pending)
++            continue;
++        if (now - entry.pendingSince > PENDING_ALERT_EXPIRY_MS) {
++            if (now - entry.lastSeen <= REDETECTION_REARM_MS) {
++                // This is still a live sighting; make it fresh instead of sending a stale one.
++                entry.pendingSince = now;
++            } else {
++                entry.pending = false;
++                ++expiredAlerts;
++                continue;
++            }
++        }
++        const uint32_t age = now - entry.pendingSince;
++        if (!oldest || age > oldestAge) {
++            oldest = &entry;
++            oldestAge = age;
++        }
++    }
++    if (!oldest || (hasGlobalAlert && now - lastGlobalAlert < GLOBAL_ALERT_SPACING_MS) ||
++        (hasFailedAttempt && now - lastFailedAttempt < FAILED_SEND_RETRY_MS))
++        return;
++
++    if (!sendAlert(oldest->address, oldest->pendingRedetection)) {
++        lastFailedAttempt = now;
++        hasFailedAttempt = true;
++        return;
++    }
++    oldest->lastAlert = now;
++    oldest->pending = false;
++    lastGlobalAlert = now;
++    hasGlobalAlert = true;
++    hasFailedAttempt = false;
++}
++
++void MeshDetectModule::logDrops()
++{
++    const uint32_t now = millis();
++    if (now - lastTelemetryLog < DROP_LOG_INTERVAL_MS)
++        return;
++    lastTelemetryLog = now;
++    const uint32_t queueDrops = droppedEvents.exchange(0, std::memory_order_relaxed);
++    if (queueDrops || evictedAlerts || expiredAlerts) {
++        LOG_WARN("MeshDetect: dropped %lu scan events, evicted %lu pending alerts, expired %lu stale alerts",
++                 static_cast<unsigned long>(queueDrops), static_cast<unsigned long>(evictedAlerts),
++                 static_cast<unsigned long>(expiredAlerts));
++        evictedAlerts = 0;
++        expiredAlerts = 0;
++    }
++}
++
++void MeshDetectModule::startBle()
++{
++    if (bleReady && !NimBLEDevice::getInitialized())
++        bleReady = false;
++    if (!NimBLEDevice::getInitialized()) {
++        // Meshtastic initializes NimBLE when its Bluetooth service is enabled. If disabled,
++        // initialize only the observer role for detector scans after module setup.
++        if (config.bluetooth.enabled)
++            return;
++        NimBLEDevice::init("MeshDetect");
++    }
++    NimBLEScan *scan = NimBLEDevice::getScan();
++    if (!scan)
++        return;
++    if (!bleReady) {
++        scan->setAdvertisedDeviceCallbacks(this, true);
++        scan->setMaxResults(0); // Do not retain rotating BLE addresses in scan results.
++        scan->setActiveScan(true);
++        scan->setInterval(BLE_SCAN_INTERVAL_MS);
++        scan->setWindow(BLE_SCAN_WINDOW_MS);
++        bleReady = true;
++    }
++    if (!scan->isScanning())
++        scan->start(BLE_SCAN_SECONDS, onScanComplete, false);
++}
++
++void MeshDetectModule::startWifi()
++{
++    if (wifiReady || targetCount == 0 || config.network.wifi_enabled)
++        return;
++    if (!WiFi.mode(WIFI_STA)) {
++        LOG_WARN("MeshDetect: unable to start Wi-Fi monitor");
++        return;
++    }
++    wifi_promiscuous_filter_t filter{};
++    filter.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT;
++    esp_wifi_set_promiscuous_filter(&filter);
++    esp_wifi_set_promiscuous_rx_cb(wifiRx);
++    if (esp_wifi_set_channel(wifiChannel, WIFI_SECOND_CHAN_NONE) != ESP_OK || esp_wifi_set_promiscuous(true) != ESP_OK) {
++        LOG_WARN("MeshDetect: unable to enable Wi-Fi promiscuous mode");
++        return;
++    }
++    wifiReady = true;
++    lastWifiHop = millis();
++    LOG_INFO("MeshDetect: Wi-Fi OUI monitor started");
++}
++
++void MeshDetectModule::hopWifiChannel()
++{
++    if (!wifiReady || millis() - lastWifiHop < WIFI_CHANNEL_HOP_MS)
++        return;
++    wifiChannel = wifiChannel % WIFI_CHANNEL_MAX + 1;
++    esp_wifi_set_channel(wifiChannel, WIFI_SECOND_CHAN_NONE);
++    lastWifiHop = millis();
++}
++
++int32_t MeshDetectModule::runOnce()
++{
++    if (!initialized) {
++        eventQueue = xQueueCreate(EVENT_QUEUE_LENGTH, sizeof(DetectionEvent));
++        if (!eventQueue) {
++            LOG_ERROR("MeshDetect: no memory for detection queue");
++            return disable();
++        }
++        loadFilters();
++        initialized = true;
++    }
++
++    if (targetCount || nameCount) {
++        startBle();
++        startWifi();
++        hopWifiChannel();
++    }
++
++    DetectionEvent event{};
++    unsigned handled = 0;
++    while (handled < EVENT_QUEUE_LENGTH && xQueueReceive(eventQueue, &event, 0) == pdTRUE) {
++        processDetection(event);
++        ++handled;
++    }
++    flushPendingAlerts();
++    logDrops();
++    return uxQueueMessagesWaiting(eventQueue) ? 10 : 200;
++}
++
++#endif
+diff --git a/src/modules/esp32/MeshDetectModule.h b/src/modules/esp32/MeshDetectModule.h
+new file mode 100644
+index 0000000..9542058
+--- /dev/null
++++ b/src/modules/esp32/MeshDetectModule.h
+@@ -0,0 +1,98 @@
++#pragma once
++
++#include "configuration.h"
++
++#if defined(ARCH_ESP32) && defined(SEEED_XIAO_S3)
++
++#include "concurrency/OSThread.h"
++#include <NimBLEAdvertisedDevice.h>
++#include <NimBLEScan.h>
++#include <esp_wifi.h>
++#include <freertos/FreeRTOS.h>
++#include <freertos/queue.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <string>
++#include <atomic>
++
++class MeshDetectModule : private concurrency::OSThread, private NimBLEAdvertisedDeviceCallbacks
++{
++  public:
++    MeshDetectModule();
++
++  protected:
++    int32_t runOnce() override;
++    void onResult(NimBLEAdvertisedDevice *device) override;
++
++  private:
++    static constexpr size_t MAX_TARGET_FILTERS = 64;
++    static constexpr size_t MAX_NAME_FILTERS = 32;
++    static constexpr size_t MAX_SEEN_DEVICES = 96;
++
++    struct TargetFilter {
++        uint8_t address[6] = {};
++        uint8_t length = 0; // 3-byte OUI or 6-byte MAC
++    };
++
++    struct NameFilter {
++        char pattern[48] = {};
++    };
++
++    struct DetectionEvent {
++        uint8_t address[6];
++        int8_t rssi;
++        uint8_t source; // 0=BLE, 1=Wi-Fi
++    };
++
++    struct SeenDevice {
++        uint8_t address[6] = {};
++        uint32_t lastSeen = 0;
++        uint32_t lastAlert = 0;
++        uint32_t pendingSince = 0;
++        bool used = false;
++        bool pending = false;
++        bool pendingRedetection = false;
++    };
++
++    TargetFilter targetFilters[MAX_TARGET_FILTERS] = {};
++    NameFilter nameFilters[MAX_NAME_FILTERS] = {};
++    SeenDevice seen[MAX_SEEN_DEVICES] = {};
++    size_t targetCount = 0;
++    size_t nameCount = 0;
++    bool metaSignatureEnabled = false;
++    bool initialized = false;
++    bool bleReady = false;
++    bool wifiReady = false;
++    uint8_t wifiChannel = 1;
++    uint32_t lastWifiHop = 0;
++    uint32_t lastGlobalAlert = 0;
++    uint32_t lastFailedAttempt = 0;
++    uint32_t lastTelemetryLog = 0;
++    uint32_t evictedAlerts = 0;
++    uint32_t expiredAlerts = 0;
++    std::atomic<uint32_t> droppedEvents{0};
++    bool hasGlobalAlert = false;
++    bool hasFailedAttempt = false;
++    QueueHandle_t eventQueue = nullptr;
++
++    void loadFilters();
++    bool addTargetFilter(const char *identifier, bool fullMac);
++    bool addNameFilter(const char *pattern);
++    bool matchesTarget(const uint8_t address[6]) const;
++    bool matchesName(const std::string &name) const;
++    bool matchesMetaSignature(NimBLEAdvertisedDevice *device) const;
++    void enqueueDetection(const uint8_t address[6], int rssi, uint8_t source);
++    void processDetection(const DetectionEvent &event);
++    void flushPendingAlerts();
++    void logDrops();
++    bool sendAlert(const uint8_t address[6], bool redetection);
++    void startBle();
++    void startWifi();
++    void hopWifiChannel();
++
++    static void onScanComplete(NimBLEScanResults results);
++    static void wifiRx(void *buffer, wifi_promiscuous_pkt_type_t type);
++    static MeshDetectModule *instance;
++};
++
++#endif

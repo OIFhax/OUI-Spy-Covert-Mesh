@@ -3,3 +3,5 @@
 .claude
 __pycache__
 *.pyc
+/wio/generated/
+/local-backups/
