@@ -6,7 +6,7 @@ The build pins Meshtastic release `v2.7.15.567b8ea` at commit `567b8ea1c2b2d100c
 
 **Status (2026-10-19):** The combined application was flashed and verified at `0x10000` on the configured Wio XIAO. Its USB API works, its private channel matches the preflash backup, and five OUI plus two name filters were verified in NVS. Two Oakley power-ups and one Gen 1 Skyler physical power-up generated alerts received by the second radio on `Mesh-Detect` and shown locally by the Wio USB client. Oakley's observed BLE address differed between power-ups. Skyler's case-to-wear reconnect with its power switch left on generated no new alert in this test. The obsolete Meshtastic Serial UART relay module was disabled.
 
-The `Pervert Glasses Detected: <observed MAC>` text in this branch is a source change. The configured Wio has not been flashed or field-tested with that new text.
+The `Pervert Glasses Detected: <observed MAC>` and `Pervert Glasses Still On: <observed MAC>` texts in this branch are source changes. The configured Wio has not been flashed or field-tested with those new texts.
 
 ## Bundled filters
 
@@ -63,6 +63,6 @@ Do not use `firmware.factory.bin`, `erase_flash`, the root detector-only `flash.
 
 ## Verify operation
 
-After reboot, confirm Meshtastic reconnects over USB or Bluetooth and still has primary channel 0 named exactly `Mesh-Detect` with its private key, `US` region, `LONG_FAST` preset, and explicit frequency slot 20. The module refuses detector alerts if channel 0 is not the private `Mesh-Detect` channel. Bring a known matching device near the XIAO and check that `Pervert Glasses Detected: <observed MAC>` appears both on the Wio's local Meshtastic client and on a second radio joined to `Mesh-Detect`. A matching advertisement after at least 30 seconds of absence can produce `Redetection: Device <observed MAC>`. The detector spaces outbound alerts at least 10 seconds apart.
+After reboot, confirm Meshtastic reconnects over USB or Bluetooth and still has primary channel 0 named exactly `Mesh-Detect` with its private key, `US` region, `LONG_FAST` preset, and explicit frequency slot 20. The module refuses detector alerts if channel 0 is not the private `Mesh-Detect` channel. Bring a known matching device near the XIAO and check that `Pervert Glasses Detected: <observed MAC>` appears both on the Wio's local Meshtastic client and on a second radio joined to `Mesh-Detect`. A matching advertisement after at least 30 seconds of absence can produce `Pervert Glasses Still On: <observed MAC>`. The detector spaces outbound alerts at least 10 seconds apart.
 
 This scanner observes BLE advertisements and Wi-Fi management-frame addresses. It cannot see the Bluetooth Classic reconnection measured during a Gen 1 Ray-Ban Meta case-to-wear test, so another alert on every case removal is not guaranteed. See the [main README](../README.md#first-generation-case-to-wear-test) for the observed transport behavior.

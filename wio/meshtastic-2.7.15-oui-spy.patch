@@ -353,7 +353,7 @@ index 0000000..a6edf36
 +    snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", address[0], address[1], address[2], address[3],
 +             address[4], address[5]);
 +    char message[80];
-+    snprintf(message, sizeof(message), redetection ? "Redetection: Device %s" : "Pervert Glasses Detected: %s", mac);
++    snprintf(message, sizeof(message), redetection ? "Pervert Glasses Still On: %s" : "Pervert Glasses Detected: %s", mac);
 +
 +    meshtastic_MeshPacket *packet = router->allocForSending();
 +    packet->channel = 0;

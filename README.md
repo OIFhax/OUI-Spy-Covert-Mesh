@@ -4,7 +4,7 @@ The target hardware is **one Seeed XIAO ESP32-S3 with a Wio-SX1262 mounted on it
 
 Source repository: [OIFhax/OUI-Spy-Covert-Mesh](https://github.com/OIFhax/OUI-Spy-Covert-Mesh).
 
-**Pervert-Detector branch:** This branch publishes the five OUI and two BLE name filters used on the configured Wio in `wio/generated/meshdetect_filter_seed.h`. New builds send `Pervert Glasses Detected: <observed MAC>` for first sightings. The private Meshtastic channel key, device backups, and a built Wio image are not included. This message change has not yet been installed or field-tested on the Wio.
+**Pervert-Detector branch:** This branch publishes the five OUI and two BLE name filters used on the configured Wio in `wio/generated/meshdetect_filter_seed.h`. New builds send `Pervert Glasses Detected: <observed MAC>` for first sightings and `Pervert Glasses Still On: <observed MAC>` for redetections. The private Meshtastic channel key, device backups, and a built Wio image are not included. These message changes have not yet been installed or field-tested on the Wio.
 
 **Status (2026-10-19):** The combined image is installed on the configured Wio XIAO. Its USB API is responsive, the private `Mesh-Detect` channel matches the preflash backup, and all five OUI and two name filters were verified in device NVS. Two Oakley power-ups and one Gen 1 Skyler power-up produced alerts on the receiving radio's private channel and the Wio's USB client. Removing Skyler from its case and reconnecting it while its power switch stayed on produced no new alert in this test. Build and update instructions are in [`wio/`](wio/README.md).
 
@@ -32,7 +32,7 @@ The detector module is applied to pinned Meshtastic `v2.7.15.567b8ea` source by 
 | Saved name pattern | Case-insensitive substring of a BLE advertised name |
 | Meta glasses signature | BLE service UUID `FD5F` together with manufacturer ID `0x01AB` or `0x0D53`, when a Meta-family name filter enables signature matching |
 
-When at least one address filter exists and Meshtastic Wi-Fi is disabled, the Wi-Fi monitor hops across US channels 1–11. A first matching sighting queues `Pervert Glasses Detected: <observed MAC>`. The same observed address can queue `Redetection: Device <observed MAC>` after at least 30 seconds without a matching sighting. Alerts are spaced at least 10 seconds apart across targets. A rotating BLE address may appear as a new device.
+When at least one address filter exists and Meshtastic Wi-Fi is disabled, the Wi-Fi monitor hops across US channels 1–11. A first matching sighting queues `Pervert Glasses Detected: <observed MAC>`. The same observed address can queue `Pervert Glasses Still On: <observed MAC>` after at least 30 seconds without a matching sighting. Alerts are spaced at least 10 seconds apart across targets. A rotating BLE address may appear as a new device.
 
 The signature can match an unnamed advertisement even when the Bluetooth address
 rotates. It can only detect a pair while that pair advertises; a pair that stops
@@ -84,7 +84,7 @@ The single XIAO's existing Meshtastic configuration was tested by sending a manu
 
 ```
 Pervert Glasses Detected: <observed MAC>
-Redetection: Device <observed MAC>
+Pervert Glasses Still On: <observed MAC>
 ```
 
 Preserve these settings when installing a combined image:
