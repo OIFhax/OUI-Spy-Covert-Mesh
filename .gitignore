@@ -3,5 +3,6 @@
 .claude
 __pycache__
 *.pyc
-/wio/generated/
+/wio/generated/*
+!/wio/generated/meshdetect_filter_seed.h
 /local-backups/

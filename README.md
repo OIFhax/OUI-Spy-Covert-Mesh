@@ -4,6 +4,8 @@ The target hardware is **one Seeed XIAO ESP32-S3 with a Wio-SX1262 mounted on it
 
 Source repository: [OIFhax/OUI-Spy-Covert-Mesh](https://github.com/OIFhax/OUI-Spy-Covert-Mesh).
 
+**Pervert-Detector branch:** This branch publishes the five OUI and two BLE name filters used on the configured Wio in `wio/generated/meshdetect_filter_seed.h`. New builds send `Pervert Glasses Detected: <observed MAC>` for first sightings. The private Meshtastic channel key, device backups, and a built Wio image are not included. This message change has not yet been installed or field-tested on the Wio.
+
 **Status (2026-10-19):** The combined image is installed on the configured Wio XIAO. Its USB API is responsive, the private `Mesh-Detect` channel matches the preflash backup, and all five OUI and two name filters were verified in device NVS. Two Oakley power-ups and one Gen 1 Skyler power-up produced alerts on the receiving radio's private channel and the Wio's USB client. Removing Skyler from its case and reconnecting it while its power switch stayed on produced no new alert in this test. Build and update instructions are in [`wio/`](wio/README.md).
 
 The root `src/main.cpp`, `platformio.ini`, bundled `firmware/mesh-detect-meta-glasses.bin`, and `flash.py` belong to the earlier **detector-only** XIAO. That image has no Meshtastic stack or Wio driver. `flash.py` requires `--legacy-detector` to guard against installing it on the one-board radio. The old detector XIAO is no longer installed.
@@ -30,7 +32,7 @@ The detector module is applied to pinned Meshtastic `v2.7.15.567b8ea` source by 
 | Saved name pattern | Case-insensitive substring of a BLE advertised name |
 | Meta glasses signature | BLE service UUID `FD5F` together with manufacturer ID `0x01AB` or `0x0D53`, when a Meta-family name filter enables signature matching |
 
-When at least one address filter exists and Meshtastic Wi-Fi is disabled, the Wi-Fi monitor hops across US channels 1–11. A first matching sighting queues `Device Detected: <observed MAC>`. The same observed address can queue `Redetection: Device <observed MAC>` after at least 30 seconds without a matching sighting. Alerts are spaced at least 10 seconds apart across targets. A rotating BLE address may appear as a new device.
+When at least one address filter exists and Meshtastic Wi-Fi is disabled, the Wi-Fi monitor hops across US channels 1–11. A first matching sighting queues `Pervert Glasses Detected: <observed MAC>`. The same observed address can queue `Redetection: Device <observed MAC>` after at least 30 seconds without a matching sighting. Alerts are spaced at least 10 seconds apart across targets. A rotating BLE address may appear as a new device.
 
 The signature can match an unnamed advertisement even when the Bluetooth address
 rotates. It can only detect a pair while that pair advertises; a pair that stops
@@ -81,7 +83,7 @@ devices](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/C
 The single XIAO's existing Meshtastic configuration was tested by sending a manual text message from the Wio kit; the receiving radio displayed it on `Mesh-Detect`. The combined detector's two Oakley alerts and one Skyler power-up alert were also received there and shown by the Wio's USB client. Oakley used a different observed BLE address after its second power-up, so both were first-sighting messages. The detector creates alerts such as:
 
 ```
-Device Detected: <observed MAC>
+Pervert Glasses Detected: <observed MAC>
 Redetection: Device <observed MAC>
 ```
 
@@ -99,11 +101,11 @@ The module checks that the Wio's primary channel 0 is named exactly `Mesh-Detect
 
 ## Filter configuration
 
-The validated backup from the removed detector XIAO contains **five OUI filters and two name filters**, with no full-MAC filters. [`tools/export_filter_seed.py`](tools/export_filter_seed.py) extracts only those filters into the ignored `wio/generated/meshdetect_filter_seed.h`; it does not copy the old access-point credentials, detection history, or Meshtastic channel key. The build script includes this local seed when present.
+This branch tracks `wio/generated/meshdetect_filter_seed.h`, generated from the validated backup of the removed detector XIAO. It contains **five OUI filters and two name filters**, with no full-MAC filters. [`tools/export_filter_seed.py`](tools/export_filter_seed.py) can regenerate or check that header against the local backup; it does not copy old access-point credentials, detection history, radio settings, or the Meshtastic channel key. The build script includes the tracked seed automatically.
 
-On first boot, the combined module copies the seed into the Wio's `meshdetect` NVS namespace **only when that namespace has no target or name filters**. Existing Wio detector filters take precedence. Later app-only firmware updates keep those NVS filters; changing the seed and rebuilding alone does not replace them. Without saved filters or a seed, the module falls back to built-in `Meta`, `Oakley`, and `Ray-Ban` BLE name patterns and their enabled Meta signature. See the [one-board build guide](wio/README.md) for the local export and build commands.
+On first boot, the combined module copies the seed into the Wio's `meshdetect` NVS namespace **only when that namespace has no target or name filters**. Existing Wio detector filters take precedence. Later app-only firmware updates keep those NVS filters; changing the seed and rebuilding alone does not replace them. Without saved filters or a seed, the module falls back to built-in `Meta`, `Oakley`, and `Ray-Ban` BLE name patterns and their enabled Meta signature. See the [one-board build guide](wio/README.md) for build and update commands.
 
-The combined firmware currently has **no detector access point or web filter editor**. To change filters, prepare a revised local seed or source and rebuild, then arrange a targeted update to the `meshdetect` NVS namespace. Erasing all NVS to force reseeding can disrupt unrelated persisted device state. The earlier detector-only firmware's web UI and AP password do not configure this one-board build.
+The combined firmware currently has **no detector access point or web filter editor**. To change filters, revise the seed or source and rebuild, then arrange a targeted update to the `meshdetect` NVS namespace. Erasing all NVS to force reseeding can disrupt unrelated persisted device state. The earlier detector-only firmware's web UI and AP password do not configure this one-board build.
 
 ## Hardware
 
@@ -113,7 +115,7 @@ Use the [Seeed XIAO ESP32-S3/Wio-SX1262 B2B kit](https://wiki.seeedstudio.com/wi
 
 ### Combined one-board image
 
-Follow [`wio/README.md`](wio/README.md) to export the private local seed, build the pinned Meshtastic image, verify its size against the **installed** app0 partition, and install only the application image. The configured radio's active app0 starts at `0x10000` and has size `0x250000`. Keep a private full-flash and channel-configuration backup before updating it. The build's `firmware.factory.bin` contains a partition table and is not the update image for this configured radio.
+Follow [`wio/README.md`](wio/README.md) to build the pinned Meshtastic image with this branch's included seed, verify its size against the **installed** app0 partition, and install only the application image. The configured radio's active app0 starts at `0x10000` and has size `0x250000`. Keep a private full-flash and channel-configuration backup before updating it. The build's `firmware.factory.bin` contains a partition table and is not the update image for this configured radio.
 
 After installation, verify that the Wio still has the private `Mesh-Detect` primary channel and frequency slot 20, then verify a matched detector sighting appears locally on the Wio and on the receiving radio. Gen 1 case-to-wear behavior must be evaluated within the Bluetooth limitation above.
 

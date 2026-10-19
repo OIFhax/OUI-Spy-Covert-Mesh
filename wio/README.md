@@ -2,22 +2,24 @@
 
 This directory builds the detector **inside Meshtastic** for the assembled [Seeed XIAO ESP32-S3/Wio-SX1262 kit](https://wiki.seeedstudio.com/wio_sx1262_with_xiao_esp32s3_kit/). One XIAO performs BLE and Wi-Fi scanning and drives the mounted SX1262 LoRa radio. No Heltec, second detector board, or UART wiring is used.
 
-The build pins Meshtastic release `v2.7.15.567b8ea` at commit `567b8ea1c2b2d100c24b0d6cbc437ec89fae0a56` and PlatformIO environment `seeed-xiao-s3`. [`build.sh`](build.sh) clones that exact source into a private temporary directory, applies `meshtastic-2.7.15-oui-spy.patch`, optionally copies a local filter seed, and builds the images. It never opens a serial port or flashes hardware.
+The build pins Meshtastic release `v2.7.15.567b8ea` at commit `567b8ea1c2b2d100c24b0d6cbc437ec89fae0a56` and PlatformIO environment `seeed-xiao-s3`. [`build.sh`](build.sh) clones that exact source into a private temporary directory, applies `meshtastic-2.7.15-oui-spy.patch`, copies this branch's tracked filter seed, and builds the images. It never opens a serial port or flashes hardware.
 
 **Status (2026-10-19):** The combined application was flashed and verified at `0x10000` on the configured Wio XIAO. Its USB API works, its private channel matches the preflash backup, and five OUI plus two name filters were verified in NVS. Two Oakley power-ups and one Gen 1 Skyler physical power-up generated alerts received by the second radio on `Mesh-Detect` and shown locally by the Wio USB client. Oakley's observed BLE address differed between power-ups. Skyler's case-to-wear reconnect with its power switch left on generated no new alert in this test. The obsolete Meshtastic Serial UART relay module was disabled.
 
-## Prepare local filters
+The `Pervert Glasses Detected: <observed MAC>` text in this branch is a source change. The configured Wio has not been flashed or field-tested with that new text.
 
-The removed detector's validated NVS backup holds five OUI and two BLE name filters. Export only those filter values into the ignored local header, using the backup path on this machine:
+## Bundled filters
+
+This branch intentionally tracks `wio/generated/meshdetect_filter_seed.h` with the five OUI and two BLE name filters used on the configured Wio. A fresh build includes the seed without needing the private backup. To check or intentionally regenerate the header from a validated detector NVS backup:
 
 ```sh
 python3 tools/export_filter_seed.py --nvs /path/to/detector-nvs.bin
 python3 tools/export_filter_seed.py --nvs /path/to/detector-nvs.bin --check
 ```
 
-The exporter validates the backup and writes `wio/generated/meshdetect_filter_seed.h` with mode `0600`. It rejects backups whose filter counts or format differ from the validated profile. It does not export AP credentials, detection history, radio configuration, or channel keys. The build script copies the header into its private Meshtastic checkout with mode `0600`. Keep that checkout, any resulting image, and full-flash backups private: an image built with the seed contains the filters. None of those files belongs in Git.
+The exporter validates the backup and writes the header with mode `0600`. It rejects backups whose filter counts or format differ from the validated profile. It does not export AP credentials, detection history, radio configuration, or channel keys. The build script copies the header into its temporary Meshtastic checkout with mode `0600`. This branch publishes only the seven filter values; keep full-flash backups and channel configuration exports private. A built image contains the published filters but does not include the private channel key.
 
-At first boot, the module imports the seed into the Wio's `meshdetect` NVS namespace **only if it finds no target or name filters there**. Existing NVS filters win. Rebuilding with a different seed and app-only flashing does not replace filters already in NVS. With neither NVS filters nor a seed, the firmware uses generic `Meta`, `Oakley`, and `Ray-Ban` name filters and the Meta BLE signature. The fallback does not include the saved OUIs.
+At first boot, the module imports the seed into the Wio's `meshdetect` NVS namespace **only if it finds no target or name filters there**. Existing NVS filters win. Rebuilding with a different seed and app-only flashing does not replace filters already in NVS. If the seed is removed and the Wio has no saved filters, the firmware uses generic `Meta`, `Oakley`, and `Ray-Ban` name filters and the Meta BLE signature. That fallback does not include the saved OUIs.
 
 The combined image has **no detector AP or web filter editor**. Updating filters after the initial seed requires a targeted `meshdetect` NVS change as well as a revised seed or source. A blanket NVS erase can disrupt unrelated persisted device state.
 
@@ -61,6 +63,6 @@ Do not use `firmware.factory.bin`, `erase_flash`, the root detector-only `flash.
 
 ## Verify operation
 
-After reboot, confirm Meshtastic reconnects over USB or Bluetooth and still has primary channel 0 named exactly `Mesh-Detect` with its private key, `US` region, `LONG_FAST` preset, and explicit frequency slot 20. The module refuses detector alerts if channel 0 is not the private `Mesh-Detect` channel. Bring a known matching device near the XIAO and check that `Device Detected: <observed MAC>` appears both on the Wio's local Meshtastic client and on a second radio joined to `Mesh-Detect`. A matching advertisement after at least 30 seconds of absence can produce `Redetection: Device <observed MAC>`. The detector spaces outbound alerts at least 10 seconds apart.
+After reboot, confirm Meshtastic reconnects over USB or Bluetooth and still has primary channel 0 named exactly `Mesh-Detect` with its private key, `US` region, `LONG_FAST` preset, and explicit frequency slot 20. The module refuses detector alerts if channel 0 is not the private `Mesh-Detect` channel. Bring a known matching device near the XIAO and check that `Pervert Glasses Detected: <observed MAC>` appears both on the Wio's local Meshtastic client and on a second radio joined to `Mesh-Detect`. A matching advertisement after at least 30 seconds of absence can produce `Redetection: Device <observed MAC>`. The detector spaces outbound alerts at least 10 seconds apart.
 
 This scanner observes BLE advertisements and Wi-Fi management-frame addresses. It cannot see the Bluetooth Classic reconnection measured during a Gen 1 Ray-Ban Meta case-to-wear test, so another alert on every case removal is not guaranteed. See the [main README](../README.md#first-generation-case-to-wear-test) for the observed transport behavior.

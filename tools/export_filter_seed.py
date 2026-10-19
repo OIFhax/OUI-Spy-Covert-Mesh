@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Export only the old detector's OUI and name filters as a local C++ seed.
+"""Export only the old detector's OUI and name filters as a C++ seed.
 
-The generated header is ignored by Git and is intended for a one-time import into
-the combined Meshtastic firmware's `meshdetect` Preferences namespace. No AP
-settings, detected-device history, radio settings, or channel keys are exported.
+The Pervert-Detector branch tracks the generated header so fresh Wio builds include
+its filters. No AP settings, detected-device history, radio settings, or channel
+keys are exported.
 """
 
 from __future__ import annotations
@@ -166,8 +166,8 @@ def _cpp_literal(value: str) -> str:
 
 def make_header(ouis: list[str], names: list[str]) -> bytes:
     lines = [
-        "// Generated locally from the detector NVS backup; contains private filters.",
-        "// Do not commit this file or copy it into public source control.",
+        "// Pervert-Detector filter seed from the validated detector NVS backup.",
+        "// Contains only OUI and BLE name filters; no radio key or AP credentials.",
         "#pragma once",
         "#include <stddef.h>",
         "",
@@ -208,7 +208,7 @@ def main() -> int:
     parser.add_argument("--nvs", type=Path, default=DEFAULT_NVS,
                         help="old detector NVS backup (default: validated 2026-10-18 backup)")
     parser.add_argument("--check", action="store_true",
-                        help="validate the ignored generated header without rewriting it")
+                        help="validate the generated header without rewriting it")
     args = parser.parse_args()
     try:
         ouis, names = load_filters(args.nvs.read_bytes())
