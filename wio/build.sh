@@ -30,14 +30,14 @@ command -v "$pio_command" >/dev/null 2>&1 || fail \
 temp_parent="${WIO_TMPDIR:-${TMPDIR:-/private/tmp}}"
 [[ -d "$temp_parent" ]] || fail "Temporary directory does not exist: $temp_parent"
 
-build_root="$(mktemp -d "$temp_parent/oui-spy-covert-wio.XXXXXXXX")" || fail \
+build_root="$(mktemp -d "$temp_parent/oui-spy-covert-mesh-wio.XXXXXXXX")" || fail \
   "Could not create a private build directory in $temp_parent"
 source_dir="$build_root/firmware"
 
 # Keep PlatformIO's package cache outside the source checkout so a fresh,
 # pinned checkout can be used on every run. An existing setting takes priority.
 if [[ -z "${PLATFORMIO_CORE_DIR:-}" ]]; then
-  export PLATFORMIO_CORE_DIR="$temp_parent/oui-spy-covert-pio-cache"
+  export PLATFORMIO_CORE_DIR="$temp_parent/oui-spy-covert-mesh-pio-cache"
   mkdir -p "$PLATFORMIO_CORE_DIR"
   chmod 700 "$PLATFORMIO_CORE_DIR"
 else

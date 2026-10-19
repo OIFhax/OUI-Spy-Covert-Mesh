@@ -1,6 +1,8 @@
-# OUI-Spy Covert
+# OUI-Spy Covert Mesh
 
 The target hardware is **one Seeed XIAO ESP32-S3 with a Wio-SX1262 mounted on its B2B connector**. The XIAO runs the BLE/Wi-Fi detector inside Meshtastic firmware; the Wio supplies the SX1262 LoRa transceiver. Matching device sightings become text alerts on the private `Mesh-Detect` channel. See [Seeed's kit guide](https://wiki.seeedstudio.com/wio_sx1262_with_xiao_esp32s3_kit/).
+
+Source repository: [OIFhax/OUI-Spy-Covert-Mesh](https://github.com/OIFhax/OUI-Spy-Covert-Mesh).
 
 **Status (2026-10-19):** The combined image is installed on the configured Wio XIAO. Its USB API is responsive, the private `Mesh-Detect` channel matches the preflash backup, and all five OUI and two name filters were verified in device NVS. Two Oakley power-ups and one Gen 1 Skyler power-up produced alerts on the receiving radio's private channel and the Wio's USB client. Removing Skyler from its case and reconnecting it while its power switch stayed on produced no new alert in this test. Build and update instructions are in [`wio/`](wio/README.md).
 

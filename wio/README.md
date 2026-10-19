@@ -1,4 +1,4 @@
-# One-board XIAO ESP32-S3 + Wio-SX1262 build
+# OUI-Spy Covert Mesh: one-board XIAO ESP32-S3 + Wio-SX1262 build
 
 This directory builds the detector **inside Meshtastic** for the assembled [Seeed XIAO ESP32-S3/Wio-SX1262 kit](https://wiki.seeedstudio.com/wio_sx1262_with_xiao_esp32s3_kit/). One XIAO performs BLE and Wi-Fi scanning and drives the mounted SX1262 LoRa radio. No Heltec, second detector board, or UART wiring is used.
 
