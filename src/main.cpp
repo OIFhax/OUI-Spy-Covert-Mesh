@@ -6,8 +6,8 @@
  * Sends detection alerts to Meshtastic device over UART Serial1.
  * No buzzer. NeoPixel for visual feedback.
  *
- * Target: Seeed Studio Xiao ESP32-S3
- * Meshtastic: Heltec LoRa V3 (or similar) via Serial1
+ * Detector: Seeed Studio XIAO ESP32-S3 on Mesh-Detect hardware.
+ * Meshtastic radio: separate XIAO ESP32-S3 + Wio-SX1262 B2B kit via Serial1.
  */
 
 #include <Arduino.h>
@@ -26,8 +26,8 @@
 // ================================
 // Pin Definitions - Xiao ESP32 S3
 // ================================
-#define SERIAL1_TX_PIN  5    // GPIO5 -> Meshtastic RX (matches mesh-detect PCB)
-#define SERIAL1_RX_PIN  6    // GPIO6 -> Meshtastic TX (matches mesh-detect PCB)
+#define SERIAL1_TX_PIN  5    // Detector GPIO5 -> radio XIAO D1/GPIO2 RX
+#define SERIAL1_RX_PIN  6    // Detector GPIO6 <- radio XIAO D3/GPIO4 TX
 #define NEOPIXEL_PIN    1    // GPIO1 (D0)
 #define NEOPIXEL_COUNT  1
 #define NEOPIXEL_BRIGHTNESS 50
@@ -42,6 +42,7 @@
 #define CONFIG_TIMEOUT        20000  // 20s before auto-starting scan if filters exist
 #define BLE_SCAN_INTERVAL     1349
 #define BLE_SCAN_WINDOW       449
+#define BLE_SCAN_CYCLE_MS     30000  // Restart to rediscover stable addresses without retaining scan history
 #define WIFI_CHANNEL_HOP_MS   2000   // Channel hop interval for WiFi promiscuous
 #define DEVICE_SAVE_INTERVAL  10000  // Auto-save devices every 10s
 #define MAX_DEVICES           100
@@ -342,6 +343,36 @@ static bool matchesNameFilter(const String& deviceName) {
     return false;
 }
 
+static bool hasMetaGlassesFilter() {
+    for (const String& pattern : nameFilters) {
+        if (pattern.equalsIgnoreCase("Meta") || pattern.equalsIgnoreCase("Oakley") ||
+            pattern.equalsIgnoreCase("Oakley Meta") || pattern.equalsIgnoreCase("Ray-Ban") ||
+            pattern.equalsIgnoreCase("Ray-Ban Meta")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool matchesMetaGlassesSignature(const NimBLEAdvertisedDevice* advertisedDevice) {
+    if (!hasMetaGlassesFilter() ||
+        !advertisedDevice->isAdvertisingService(NimBLEUUID((uint16_t)0xFD5F))) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < advertisedDevice->getManufacturerDataCount(); i++) {
+        std::string data = advertisedDevice->getManufacturerData(i);
+        if (data.size() < 2) continue;
+
+        // Bluetooth company IDs are little-endian in manufacturer data.
+        uint16_t companyId = (uint8_t)data[0] | ((uint16_t)(uint8_t)data[1] << 8);
+        if (companyId == 0x01AB || companyId == 0x0D53) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // ================================
 // Handle Detection (shared by BLE + WiFi)
 // ================================
@@ -569,15 +600,21 @@ public:
         if (name.length() > 0 && matchesNameFilter(name)) {
             String desc = "Name: " + name;
             handleDetection(mac, rssi, desc, "BLE");
+            return;
+        }
+
+        // Connected glasses can advertise without a local name and use rotating addresses.
+        if (matchesMetaGlassesSignature(advertisedDevice)) {
+            handleDetection(mac, rssi, "Meta BLE signature", "BLE");
         }
     }
 
     void onScanEnd(const NimBLEScanResults& results, int reason) override {
+        (void)results;
         if (isSerialConnected()) {
-            Serial.printf("[BLE] Scan cycle ended (reason: %d, found: %d) - restarting\n",
-                reason, results.getCount());
+            Serial.printf("[BLE] Scan cycle ended (reason: %d) - restarting\n", reason);
         }
-        NimBLEDevice::getScan()->start(0); // Restart continuous scan
+        NimBLEDevice::getScan()->start(BLE_SCAN_CYCLE_MS);
     }
 };
 
@@ -1072,6 +1109,7 @@ static void startScanningMode() {
 
     NimBLEScan* pScan = NimBLEDevice::getScan();
     pScan->setScanCallbacks(new ScanCallbacks());
+    pScan->setMaxResults(0); // Results are handled in the callback; do not retain rotating addresses
     pScan->setActiveScan(true);
     pScan->setInterval(BLE_SCAN_INTERVAL);
     pScan->setWindow(BLE_SCAN_WINDOW);
@@ -1089,8 +1127,8 @@ static void startScanningMode() {
 
     // Start BLE continuous scan
     delay(500);
-    if (pScan->start(0)) {
-        Serial.println("[SCAN] BLE continuous scan started");
+    if (pScan->start(BLE_SCAN_CYCLE_MS)) {
+        Serial.println("[SCAN] BLE scan started (30s cycles)");
     } else {
         Serial.println("[SCAN] ERROR: BLE scan failed to start!");
     }

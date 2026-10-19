@@ -2,7 +2,7 @@
 """
 MESH-DETECT -- Firmware Flasher
 
-Drop your .bin in the firmware/ folder (or pass a path), plug in your
+Use the bundled firmware (or pass a .bin path), plug in your
 XIAO ESP32-S3, and run:
 
     python flash.py
@@ -15,7 +15,6 @@ Works on macOS, Linux, and Windows.
 Requirements:  pip install esptool pyserial
 """
 
-import glob
 import io
 import os
 import sys
@@ -35,9 +34,12 @@ if sys.platform == "win32":
 
 # -- Config ----------------------------------------------------------------
 APP_OFFSET    = "0x10000"
-BAUD          = "921600"
+NVS_OFFSET    = "0x9000"
+NVS_SIZE      = "0x5000"
+BAUD          = "460800"
 CHIP          = "esp32s3"
 FIRMWARE_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "firmware")
+DEFAULT_FIRMWARE = os.path.join(FIRMWARE_DIR, "mesh-detect-meta-glasses.bin")
 
 # Known USB VID:PID pairs for ESP32-S3 / common UART bridges
 ESP_VIDS = {
@@ -123,31 +125,7 @@ def find_firmware(path_arg=None):
         print(f"\n  File not found: {path_arg}")
         sys.exit(1)
 
-    if os.path.isdir(FIRMWARE_DIR):
-        bins = sorted(glob.glob(os.path.join(FIRMWARE_DIR, "*.bin")), key=os.path.getmtime, reverse=True)
-        if len(bins) == 1:
-            return bins[0]
-        if len(bins) > 1:
-            print("\n  Multiple .bin files found:\n")
-            for i, b in enumerate(bins):
-                size = os.path.getsize(b) / 1024
-                print(f"    [{i + 1}] {os.path.basename(b)}  ({size:.0f} KB)")
-            print()
-            while True:
-                try:
-                    choice = input("  Pick a firmware [1]: ").strip()
-                    idx = int(choice) - 1 if choice else 0
-                    if 0 <= idx < len(bins):
-                        return bins[idx]
-                except (ValueError, IndexError):
-                    pass
-                print("  Invalid choice, try again.")
-
-    bins = sorted(glob.glob("*.bin"), key=os.path.getmtime, reverse=True)
-    if bins:
-        return os.path.abspath(bins[0])
-
-    return None
+    return DEFAULT_FIRMWARE if os.path.isfile(DEFAULT_FIRMWARE) else None
 
 
 def flash_one(port, firmware, do_erase=False, board_num=None):
@@ -164,7 +142,8 @@ def flash_one(port, firmware, do_erase=False, board_num=None):
 """)
 
     if do_erase:
-        erase(port)
+        if not erase(port):
+            return False
 
     print("  Flashing...\n")
 
@@ -177,9 +156,9 @@ def flash_one(port, firmware, do_erase=False, board_num=None):
         "--after", "hard_reset",
         "write_flash",
         "-z",
-        "--flash_mode", "qio",
-        "--flash_freq", "80m",
-        "--flash_size", "detect",
+        "--flash_mode", "keep",
+        "--flash_freq", "keep",
+        "--flash_size", "keep",
         APP_OFFSET, firmware,
     ]
 
@@ -198,17 +177,21 @@ def flash_one(port, firmware, do_erase=False, board_num=None):
 
 
 def erase(port):
-    """Full flash erase."""
-    print(f"  Erasing flash on {port}...\n")
+    """Clear the saved settings partition while keeping the bootloader and app."""
+    print(f"  Erasing saved settings on {port}...\n")
     cmd = [
         sys.executable, "-m", "esptool",
         "--chip", CHIP,
         "--port", port,
         "--baud", BAUD,
-        "erase_flash",
+        "erase_region", NVS_OFFSET, NVS_SIZE,
     ]
-    subprocess.run(cmd)
+    result = subprocess.run(cmd)
     print()
+    if result.returncode != 0:
+        print(f"  Settings erase failed (esptool exited with code {result.returncode}).")
+        return False
+    return True
 
 
 def batch_mode(firmware, do_erase=False):
@@ -288,8 +271,8 @@ def main():
   Usage:  python flash.py [firmware.bin] [--erase] [--single]
 
   Options:
-    firmware.bin   Path to .bin file (auto-detects from firmware/ folder)
-    --erase        Erase entire flash before writing
+    firmware.bin   Alternate app image (default: mesh-detect-meta-glasses.bin)
+    --erase        Clear saved settings only, then flash (resets filters/password)
     --single       Flash one board and exit (default is auto-flash loop)
 
   Auto-flash (default -- plug boards in one after another):
@@ -301,9 +284,7 @@ def main():
 
   Setup:
     pip install esptool pyserial
-    mkdir firmware
-    # drop your .bin in firmware/
-    python flash.py
+    python flash.py --single
 """)
             sys.exit(0)
         bin_path = a
@@ -318,9 +299,8 @@ def main():
 
     firmware = find_firmware(bin_path)
     if not firmware:
-        print(f"\n  No .bin file found.")
-        print(f"  Drop your firmware in:  {FIRMWARE_DIR}/")
-        print(f"  Or pass it directly:    python flash.py my_firmware.bin\n")
+        print(f"\n  Default firmware not found: {DEFAULT_FIRMWARE}")
+        print("  Pass a firmware path explicitly to use another image.\n")
         sys.exit(1)
 
     if do_single:
